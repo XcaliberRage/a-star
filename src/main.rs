@@ -1,66 +1,124 @@
-use ggez::{Context, ContextBuilder, GameResult};
-use ggez::event::{self, EventHandler};
+use glam::*;
+
+use ggez;
+use mint;
+use ggez::{Context, ContextBuilder, GameResult, conf};
+use ggez::event;
+use ggez::timer;
 use ggez::graphics;
 use std::collections::HashMap;
 use ggez::graphics::DrawMode::Stroke;
-use ggez::graphics::{DrawMode, Color, Rect};
-use glam::*;
+use ggez::graphics::{DrawMode, Color, Rect, Drawable, BLACK};
+use ggez::event::EventHandler;
+use std::env;
+use std::path;
+use nalgebra::Vector2;
+use ggez::conf::{WindowSetup, WindowMode, FullscreenType, NumSamples};
+
+type Point2 = glam::Vec2;
 
 const CELL_SIZE: f32 = 87.5; // 700 / 8, the dimensions of the chessboard image
 
-fn main() {
-    // Make a Context and an EventLoop.
-    let (mut ctx, mut event_loop) =
-       ContextBuilder::new("game_name", "author_name")
-           .build()
-           .unwrap();
+struct WindowSettings {
+    toggle_fullscreen: bool,
+    is_fullscreen: bool,
+    resize_projection: bool,
+    win_mo: WindowMode,
+}
 
-    // Create an instance of your event handler.
-    // Usually, you should provide it with the Context object
-    // so it can load resources like images during setup.
-    let mut my_game = MyGame::new(&mut ctx);
+struct MainState {
+    board: ChessBoard,
+    window_settings: WindowSettings,
+    canvas: graphics::Canvas,
+}
 
-    // Run!
-    match event::run(&mut ctx, &mut event_loop, &mut my_game) {
-        Ok(_) => println!("Exited cleanly."),
-        Err(e) => println!("Error occured: {}", e)
+impl MainState {
+    fn new(ctx: &mut Context) -> GameResult<MainState> {
+
+
+        let board = ChessBoard::new(ctx)?;
+
+        let win_mo = WindowMode {
+            width: board.board_dimensions.w + 50.0,
+            height: board.board_dimensions.h + 50.0,
+            maximized: false,
+            fullscreen_type: FullscreenType::Windowed,
+            borderless: false,
+            min_width: board.board_dimensions.w + 50.0,
+            min_height: board.board_dimensions.h + 50.0,
+            max_width: 0.0,
+            max_height: 0.0,
+            resizable: true
+        };
+        graphics::set_mode(ctx, win_mo)?;
+        graphics::set_drawable_size(ctx, board.board_dimensions.w, board.board_dimensions.h)?;
+        let canvas = graphics::Canvas::with_window_size(ctx)?;
+
+        let s = MainState {
+            board,
+            window_settings: WindowSettings {
+                toggle_fullscreen: false,
+                is_fullscreen: false,
+                resize_projection: false,
+                win_mo,
+            },
+            canvas,
+        };
+
+
+
+
+        Ok(s)
     }
+
 }
 
-struct MyGame {
-    chess_board: ChessBoard,
-}
-
-impl MyGame {
-    pub fn new(_ctx: &mut Context) -> MyGame {
-        // Load/create resources here: images, fonts, sounds, etc.
-        let chess_board = ChessBoard::new(_ctx).unwrap();
-
-        MyGame {
-            chess_board
-        }
-    }
-}
-
-impl EventHandler for MyGame {
+impl EventHandler for MainState {
     fn update(&mut self, _ctx: &mut Context) -> GameResult<()> {
-        // Update code here...
+
+        const DESIRED_FPS: u32 = 120;
+        while timer::check_update_time(_ctx, DESIRED_FPS) {
+
+            if self.window_settings.toggle_fullscreen {
+                let fullscreen_type = if self.window_settings.is_fullscreen {
+                    conf::FullscreenType::Desktop
+                } else {
+                    conf::FullscreenType::Windowed
+                };
+                ggez::graphics::set_fullscreen(_ctx, fullscreen_type)?;
+                self.window_settings.toggle_fullscreen = false;
+            }
+
+        }
+
         Ok(())
 
     }
 
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        graphics::clear(ctx, graphics::WHITE);
+        graphics::clear(ctx, graphics::Color::from((64, 0, 0, 0)));
 
-        // Draw code here...
-        let dst = glam::Vec2::new(20.0, 20.0);
-        let scale = glam::Vec2::new(1.0, 1.0);
-        graphics::draw(ctx,
-                       &self.chess_board.board_image,
-                       graphics::DrawParam::new()
-                           .dest(dst)
-                           .rotation(0.0)
-                           .scale(scale))?;
+        graphics::set_canvas(ctx, Option::Some(&self.canvas));
+        graphics::clear(ctx, graphics::Color::from((255, 255, 255, 128)));
+
+        let dst = nalgebra::Point2::new(25.0, 25.0);
+        let scale = mint::Vector2::from([1.0, 1.0]);
+
+        graphics::draw(
+            ctx,
+            &self.board.board_image,
+            graphics::DrawParam::new()
+                .dest(dst)
+                .scale(scale)
+                .rotation(0.0)
+                .src(self.board.board_dimensions)
+        )?;
+        graphics::set_canvas(ctx, None);
+        graphics::draw(
+            ctx,
+            &self.canvas,
+            graphics::DrawParam::new().color(Color::from((255, 255, 255,128)))
+        )?;
 
         graphics::present(ctx)
     }
@@ -68,16 +126,19 @@ impl EventHandler for MyGame {
 
 struct ChessBoard {
     board_image: graphics::Image,
+    board_dimensions: Rect,
     board_data: Vec<Cell>,
 }
 
 impl ChessBoard {
     fn new(ctx: &mut Context) -> GameResult<Self> {
 
-        let board_image = graphics::Image::new(ctx, "/data/assets/chess_board.jpg")?;
+        let mut board_image = graphics::Image::new(ctx, "/chess_board.jpg")?;
+        let board_dimensions = board_image.dimensions();
 
         let mut m = ChessBoard {
             board_image,
+            board_dimensions,
             board_data: Vec::new(),
         };
 
@@ -143,4 +204,34 @@ fn build_cell_mesh(ctx: &mut Context, y: f32, x: f32) -> GameResult<graphics::Me
     
     mb.build(ctx)
 
+}
+
+fn main() -> GameResult {
+
+    let resource_dir = if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
+        let mut path = path::PathBuf::from(manifest_dir);
+        path.push("resources");
+        path
+    } else {
+        path::PathBuf::from("./resources")
+    };
+
+    // Make a Context and an EventLoop.
+    let mut c =
+       ContextBuilder::new("game_name", "XcaliberRage")
+           .add_resource_path(resource_dir);
+
+    let (mut ctx, mut event_loop) = c.build()?;
+
+    // Create an instance of your event handler.
+    // Usually, you should provide it with the Context object
+    // so it can load resources like images during setup.
+    let mut game = MainState::new(&mut ctx)?;
+
+    dbg!(game.board.board_dimensions);
+    dbg!(game.canvas.dimensions(&mut ctx));
+
+
+    // Run!
+    event::run(&mut ctx, &mut event_loop,&mut game)
 }
